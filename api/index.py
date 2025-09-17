@@ -176,6 +176,32 @@ def publish_event(topic, event_type, store_id, data, changes=None):
 
 # --- Rotas da API ---
 
+@app.route('/api/stores', methods=['GET'])
+def list_all_stores():
+    if not db or not db_session:
+        return jsonify({"error": "Dependências de banco de dados não inicializadas."}), 503
+
+    try:
+        stores_ref = db.collection('stores')
+        docs = stores_ref.stream()
+        
+        all_stores = []
+        for doc in docs:
+            store_data = doc.to_dict()
+            store_data['id'] = doc.id
+            
+            # Fetch location from PostGIS
+            location_record = db_session.query(StoreLocation).filter_by(store_id=doc.id).first()
+            if location_record and to_shape:
+                point = to_shape(location_record.location)
+                store_data['location'] = {'latitude': point.y, 'longitude': point.x}
+            
+            all_stores.append(store_data)
+            
+        return jsonify({"stores": all_stores}), 200
+    except Exception as e:
+        return jsonify({"error": f"Erro ao listar lojas: {e}"}), 500
+
 @app.route("/api/stores", methods=["POST"])
 def create_store():
     if not db or not db_session:
