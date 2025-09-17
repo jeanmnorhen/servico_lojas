@@ -35,7 +35,7 @@ except ImportError:
 # --- Variáveis globais para erros de inicialização ---
 firebase_init_error = None
 postgres_init_error = None
-kafka_init_error = None
+kafka_producer_init_error = None # Renamed for clarity
 db_init_error = None
 
 # --- Configuração do Flask ---
@@ -139,13 +139,13 @@ if Producer:
             producer = Producer(kafka_conf)
             print("Produtor Kafka inicializado com sucesso.")
         else:
-            kafka_init_error = "Variáveis de ambiente do Kafka não encontradas."
-            print(kafka_init_error)
+            kafka_producer_init_error = "Variáveis de ambiente do Kafka não encontradas."
+            print(kafka_producer_init_error)
     except Exception as e:
-        kafka_init_error = str(e)
+        kafka_producer_init_error = str(e)
         print(f"Erro ao inicializar Produtor Kafka: {e}")
 else:
-    kafka_init_error = "Biblioteca confluent_kafka não encontrada."
+    kafka_producer_init_error = "Biblioteca confluent_kafka não encontrada."
 
 def delivery_report(err, msg):
     if err is not None:
@@ -349,23 +349,56 @@ def delete_store(store_id):
         db_session.rollback()
         return jsonify({"error": f"Erro ao deletar loja: {e}"}), 500
 
-# --- Health Check (para Vercel) ---
-@app.route('/api/health', methods=['GET'])
-def health_check():
+def get_health_status():
+    env_vars = {
+        "FIREBASE_ADMIN_SDK_BASE64": "present" if os.environ.get('FIREBASE_ADMIN_SDK_BASE64') else "missing",
+        "POSTGRES_POSTGRES_URL": "present" if os.environ.get('POSTGRES_POSTGRES_URL') else "missing",
+        "KAFKA_BOOTSTRAP_SERVER": "present" if os.environ.get('KAFKA_BOOTSTRAP_SERVER') else "missing",
+        "KAFKA_API_KEY": "present" if os.environ.get('KAFKA_API_KEY') else "missing",
+        "KAFKA_API_SECRET": "present" if os.environ.get('KAFKA_API_SECRET') else "missing"
+    }
+
     pg_status = "error"
+    pg_query_error = None
     if db_session and text:
         try:
             db_session.execute(text('SELECT 1'))
             pg_status = "ok"
-        except Exception:
-            pass
+        except Exception as e:
+            pg_query_error = str(e)
+            pg_status = f"error during query: {pg_query_error}"
 
     status = {
-        "firestore": "ok" if db else "error",
-        "kafka_producer": "ok" if producer else "error",
-        "postgresql": pg_status
+        "environment_variables": env_vars,
+        "dependencies": {
+            "firestore": "ok" if db else "error",
+            "kafka_producer": "ok" if producer else "error",
+            "postgresql_connection": pg_status,
+            "table_initialization": "ok" if not db_init_error else "error"
+        },
+        "initialization_errors": {
+            "firestore": firebase_init_error,
+            "postgresql_engine": postgres_init_error,
+            "postgresql_table": db_init_error,
+            "postgresql_query": pg_query_error,
+            "kafka_producer": kafka_producer_init_error
+        }
     }
-    http_status = 200 if all(s == "ok" for s in status.values()) else 503
+    return status
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    status = get_health_status()
+    
+    all_ok = (
+        all(value == "present" for value in status["environment_variables"].values()) and
+        status["dependencies"]["firestore"] == "ok" and
+        status["dependencies"]["kafka_producer"] == "ok" and
+        status["dependencies"]["postgresql_connection"] == "ok" and
+        status["dependencies"]["table_initialization"] == "ok"
+    )
+    http_status = 200 if all_ok else 503
+    
     return jsonify(status), http_status
 
 # --- Inicialização ---
